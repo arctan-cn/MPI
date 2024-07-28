@@ -1,4 +1,4 @@
 server:
   address: 127.0.0.1
   port: 9201
-  password: !!str ikun
+  password: !!str ikun520
