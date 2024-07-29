@@ -1,17 +1,59 @@
+import subprocess
 import threading
 import socket
 import yaml
 import json
 import uuid
 import time
+import tqdm
 import sys
 
-VERSION = "0.0.2"
+VERSION = "0.0.3"
+PATH = __file__
 
 class InterfaceError(Exception):
     def __init__(self, message="", code=0):
         self.code = code
         super().__init__(message)
+def requireArgument(key, args, allowEmpty:bool=True, typeRequired=None):
+    if not key in args: raise InterfaceError(f"\"{key}\" is required")
+    if (not args[key]) and (not allowEmpty): raise InterfaceError("\"{key}\" cannot be empty ")
+    if typeRequired and type(args[key]) != typeRequired: raise InterfaceError("\"{key}\" must be %s (not %s)" % (typeRequired.__name__, type(args[key]).__name__))
+class Link:
+    def __init__(self, type, target):
+        # {"type":"none","target":""}
+        self.__link = {"type":type, "target":target}
+        self.__type = type
+        self.__target = target
+    @property
+    def type(self): return self.__type
+    @property
+    def target(self): return self.__target
+    def __repr__(self):
+        return f"Link({self.__type}->{self.__target})"
+    def call(self, *args, **kwargs):
+        arguments = {
+            "type": "call",
+            "args": args,
+            "kwargs": kwargs
+        }
+        if self.__type == "script":
+            arguments['type'] = "scriptCall"
+            response = subprocess.run(["python", self.__target, json.dumps(arguments)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if response.returncode == 0:
+                return response.stdout.decode("utf-8")
+            else:
+                raise InterfaceError(f"Exceptional return code: {response.returncode}\nstdout: {response.stdout}\nstderr: {response.stderr}")
+
+class Pack:
+    def __init__(self, namespace:str):
+        self.__namespace = namespace
+        self.__path = "./"
+        self.configFiles = ["pack.yml", "register.yml"]
+    @property
+    def namespace(self): return self.__namespace
+    @property
+    def path(self): return self.__path
 class Selector:
     def __init__(self, selector:str):
         if type(selector) != str:
@@ -113,11 +155,33 @@ class Interface:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.send("disconnect")
         self.socket.close()
-
     def command(self, command:str):
         return self.request("command", {"command":command})
+    @staticmethod
+    def constructArguments(type:str="call", *args, **kwargs): return {"type":type, "args":args, "kwargs":kwargs}
+    @staticmethod
+    def executeScript(path, type:str="call", *args, **kwargs):
+        response = subprocess.run(["python", path, json.dumps({"type":type, "args":args, "kwargs":kwargs})], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if response.returncode == 0:
+            return response.stdout.decode("utf-8")
+        else:
+            raise InterfaceError(f"Exceptional return code: {response.returncode}\nstdout: {response.stdout}\nstderr: {response.stderr}")
+    @staticmethod
+    def yamlUpdate(path:str, updater=None):
+        try:
+            data = None
+            with open(path, mode="r", encoding="utf-8") as f:
+                data = yaml.load(f, Loader=yaml.SafeLoader)
+            if updater:
+                data = updater(data)
+                with open(path, mode="w", encoding="utf-8") as f:
+                    yaml.dump(data, f)
+            return data
+        except Exception as e:
+            raise InterfaceError(f"Failed to update YAML File: {path}\nException:{e}")
+        
 
-if __name__=="__main__":
+def UIConsole():
     print("Copyright(c) OASIS")
     print("MPI Debugger Console alpha v0.1")
     mc = Interface()
@@ -150,3 +214,30 @@ if __name__=="__main__":
     print("Disconnecting...")
     mc.close()
     print("\033[0;32mSuccessfully disconnected from the server.\033[0m")
+
+def launch():
+    print(f"MPI v{VERSION}")
+    print("Loading Program Packs...")
+    with open("packs.yml", mode="r", encoding="utf-8") as f:
+        packs = yaml.load(f, Loader=yaml.SafeLoader)
+    loadedPacks = {}
+    progressPackLoader = tqdm.tqdm(total=len(packs), desc="Loading Packs", unit="pack")
+    for packname in packs:
+        progressPackLoader.set_postfix({"Pack": packname})
+        try:
+            Interface.executeScript(f"{packname}/init.py", "init")
+            Interface.yamlUpdate("cache/loadedPacks.yml", lambda data: data + [packname])
+        except Exception as e:
+            print(f"\n\033[0;31mFailed to load Program Pack \"{packname}\":\n{e}\033[0m")
+        progressPackLoader.update(1)
+
+
+if __name__=="__main__":
+    if len(sys.argv) < 2 or sys.argv[1] == "--help":
+        print("MPI %s Helps:" % VERSION)
+        with open("config.yml", mode="r", encoding="utf-8") as f:
+            for i in yaml.load(f, Loader=yaml.SafeLoader)["helps"]: print(i.replace("__file__", __file__).replace("\\t","\t"))
+    elif sys.argv[1] == "--start":
+        launch()
+    elif sys.argv[1] == "--console":
+        UIConsole()
