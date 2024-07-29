@@ -1,0 +1,11 @@
+version: 0.0.4
+server:
+  address: 127.0.0.1
+  port: 9201
+  password: !!str ikun520
+helps:
+  - \t --version -v 获取当前MPI版本
+  - \t --help -? 获取MPI帮助
+  - \t --console -c 打开MPI交互式命令行
+  - \t --start -s 启动MPI Python端接口
+  - \t --clearcache -cc 清除缓存
