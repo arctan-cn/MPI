@@ -3,7 +3,7 @@ import threading
 import time  
 import random  
 import json  
-  
+
 def handle_client(conn, addr):  
     print(f"[NEW CONNECTION] {addr} connected.")  
     connected = True  
@@ -45,7 +45,7 @@ def handle_client(conn, addr):
             sendback(data, 500, {"exception":str(e)})
             break
     conn.close()  
-  
+
 def start_server():  
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  
     server.bind(("127.0.0.1", 9201))  
@@ -56,6 +56,6 @@ def start_server():
         thread = threading.Thread(target=handle_client, args=(conn, addr))  
         thread.start()  
         print(f"[ACTIVE CONNECTIONS] {threading.activeCount() - 1}")  
-  
+
 print("Server is starting...")  
 start_server()
