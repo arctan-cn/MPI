@@ -1,3 +1,7 @@
+class Data:
+    def __init__(self, *args, **kwargs):
+        for key in args: setattr(self, key, None)
+        for key in kwargs: setattr(self, key, kwargs[key])
 class Version:
     def __init__(self, version:str):
         version = version.split('.')
@@ -30,3 +34,6 @@ def requireArgument(key, args, allowEmpty:bool=True, typeRequired=None):
     if not key in args: raise TypeError(f"\"{key}\" is required")
     if (not args[key]) and (not allowEmpty): raise TypeError("\"{key}\" cannot be empty ")
     if typeRequired and type(args[key]) != typeRequired: raise TypeError("\"{key}\" must be %s (not %s)" % (typeRequired.__name__, type(args[key]).__name__))
+def setDefault(var, value):
+    if var: return var
+    else: return value

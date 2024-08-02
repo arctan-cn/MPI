@@ -10,7 +10,7 @@ import tqdm
 import sys
 import os
 
-VERSION = "0.0.4"
+VERSION = "0.0.5"
 PATH = __file__
 PARENT_PATH = "./.."
 PROGRAM_PACKS_PATH = PARENT_PATH + "/programpacks"
@@ -99,14 +99,14 @@ class Interface:
         self.createTime = time.time()
         self.stack = []
         self.connected = False
-        self.socket.settimeout(10)
+        self.socket.settimeout(10.0)
     def setTimeout(self, timeout:float=10): self.socket.settimeout(timeout)
     def connect(self): self.__enter__()
     def close(self): self.__exit__(None, None, None)
     def __enter__(self): 
         self.socket.connect((self.config["server"]["address"], self.config["server"]["port"]))
         try:
-            response = self.request("login", {"password": self.config["server"]["password"]}, login=True)
+            response = self.request({"type":"login","args":[self.config["server"]["password"]]}, login=True)
             self.connected = True
         except InterfaceError as e:
             if e.code==403:
@@ -118,53 +118,71 @@ class Interface:
         except Exception as e:
             self.socket.close()
             raise e
-    def send(self, requestType:str, message:dict={}, login=False, throwExceptionalCode=True) -> uuid.UUID:
+    def send(self, *args, login=False, throwExceptionalCode=True, zeroUUID=False):
+        # requestType:str, args:dict=[], kwargs={}
         if (not login) and (not self.connected): raise InterfaceError("Socket is not connected")
-        messageUUID = uuid.uuid4()
-        messageJson = {
-            "uuid": messageUUID.__str__(),
-            "time": time.time(),
-            "type": requestType, 
-            "message": message,
-        }
-        self.stack.append(messageJson)
-        self.socket.send(json.dumps(messageJson).encode("utf-8"))
-        return messageUUID
-    def request(self, requestType:str, message:dict={}, asyncMode:bool=False, callback=None, login:bool=False, throwExceptionalCode:bool=False):
-        requestUUID = self.send(requestType, message, login)
-        def tempResponseWaiter(sock, responseUUID:uuid.UUID, callback) -> dict:
-            while True:  
-                data = sock.recv(1024).decode("utf-8")  
-                if data:  
-                    try:
-                        received_data = json.loads(data)  
-                        if received_data.get("code") != 200:
-                            code = received_data.get("code")
-                            if code == 700:
-                                raise InterfaceError("Server closed", 700)
-                            else:
-                                if throwExceptionalCode: raise InterfaceError("Exceptional response code:%s\nMessage:%s" % (code, received_data), code)
-                        if received_data.get("uuid") == responseUUID.__str__():  
-                            if callback: callback(received_data)
-                            return received_data
-                    except json.decoder.JSONDecodeError as e:
-                        raise InterfaceError("Invalid JSON response: %s\n%s" % (data, e))
+        requests = []
+        uuidArray = []
+        for r in args:
+            if not 'args' in r: r['args'] = []
+            if not 'kwargs' in r: r['kwargs'] = {}
+            messageUUID = uuid.uuid4().__str__()
+            if zeroUUID: messageUUID = "00000000-0000-0000-0000-000000000000"
+            uuidArray.append(messageUUID)
+            requests.append({
+                "uuid": messageUUID,
+                "time": time.time(),
+                "type": r['type'], 
+                "args": r['args'],
+                "kwargs": r['kwargs'],
+            })
+        self.socket.send(json.dumps(requests).encode("utf-8"))
+        return uuidArray
+    def request(self, *args, asyncMode:bool=False, callback=None, login:bool=False, throwExceptionalCode:bool=False, zeroUUID=False):
+        # requestType:str, message:dict={},
+        requestUUIDArray = self.send(*args, login=login, zeroUUID=zeroUUID)
+        # def tempResponseWaiter(sock, responseUUID:uuid.UUID, callback) -> dict:
+        def tempResponseWaiter(sock, responseUUIDArray:list, callback):
+            if not zeroUUID:
+                results = {}
+                while True:  
+                    data = sock.recv(1024).decode("utf-8")  
+                    if data:  
+                        try:
+                            received_data = json.loads(data)  
+                            if received_data.get("code") != 200:
+                                code = received_data.get("code")
+                                if code == 700:
+                                    raise InterfaceError("Server closed", 700)
+                                else:
+                                    if throwExceptionalCode: raise InterfaceError("Exceptional response code:%s\nMessage:%s" % (code, received_data), code)
+                            if received_data.get("uuid") in responseUUIDArray:  
+                                results[received_data.get("uuid")] = received_data
+                            if len(results) == len(responseUUIDArray): break
+                        except json.decoder.JSONDecodeError as e:
+                            raise InterfaceError("Invalid JSON response: %s\n%s" % (data, e))
+                resultsArray = []
+                for key in responseUUIDArray: resultsArray.append(results[key])
+                if callback: callback(resultsArray)
+                return resultsArray
+            else:
+                return []
         if asyncMode:
-            listenerThread = threading.Thread(target=tempResponseWaiter, args=(self.socket, requestUUID, callback))
+            listenerThread = threading.Thread(target=tempResponseWaiter, args=(self.socket, requestUUIDArray, callback))
             listenerThread.start()
             return listenerThread
         else:
-            return tempResponseWaiter(self.socket, requestUUID, callback)
+            return tempResponseWaiter(self.socket, requestUUIDArray, callback)
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.send("disconnect")
+        self.request({"type":"disconnect"})
         self.socket.close()
     def command(self, command:str):
-        return self.request("command", {"command":command})
+        return self.request({"type":"command", "args":[command]})
     @staticmethod
     def constructArguments(type:str="call", *args, **kwargs): return {"type":type, "args":args, "kwargs":kwargs}
     @staticmethod
     def executeScript(path, type:str="call", *args, **kwargs):
-        response = subprocess.run(["python", path, json.dumps({"type":type, "args":args, "kwargs":kwargs})], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        response = subprocess.run(["python", path, json.dumps(Interface.constructArguments(type, *args, **kwargs))], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if response.returncode == 0:
             return response.stdout.decode("utf-8")
         else:
@@ -196,21 +214,21 @@ def UIConsole():
         try:
             sys.stdout.write("\033[0;36m")
             i = input("> ")
-            l = i.split(" ")
-            if len(l)<1: continue
-            requestType = l[0]
-            args = " ".join(l[1:len(l)])
-            if not args:args = '{}'
-            args = json.loads(args)
-            if requestType == "break":
-                sys.stdout.write("\033[0;0m")
+            l = i.split("|")
+            if i=="break":
                 break
-            response = mc.request(requestType, args)
-            if response['code']==200:
-                print("\033[0;0m%s"%str(response))
-            else:
-                print("\033[0;33m%s"%str(response))
+            elif len(l)<1:
+                continue
+            for j in range(len(l)):
+                l[j] = json.loads(l[j])
+            response = mc.request(*l)
             sys.stdout.write("\033[0;0m")
+            for r in response:
+                if r['code']==200:
+                    print("\033[0;0m%s"%str(r))
+                else:
+                    print("\033[0;33m%s"%str(r))
+                sys.stdout.write("\033[0;0m")
         except Exception as e:
             print("\033[0;31m",e,"\033[0m")
         except KeyboardInterrupt:
@@ -294,7 +312,7 @@ def UIClearcache():
 if __name__=="__main__":
     if len(sys.argv) < 2 or sys.argv[1] == "--help" or sys.argv[1] == "-?":
         print("MPI %s Helps:" % VERSION)
-        with open("config.yml", mode="r", encoding="utf-8") as f:
+        with open("/config.yml", mode="r", encoding="utf-8") as f:
             for i in yaml.load(f, Loader=yaml.SafeLoader)["helps"]: print(i.replace("__file__", __file__).replace("\\t","\t"))
     elif sys.argv[1] == "--version" or sys.argv[1] == "-v":
         SHOW_VERSION()
